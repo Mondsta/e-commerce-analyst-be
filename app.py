@@ -34,10 +34,12 @@ def get_shopee_reviews(url, limit=50):
 
             for review in reviews:
                 comment = review.get("comment")
+                rating = review.get("rating_star")  # Menambahkan rating ulasan
                 if comment:  # Check if the comment is not empty
                     reviews_list.append({
                         "username": review.get("author_username"),
                         "review": comment,
+                        "rating": rating,  # Menyimpan rating ulasan
                         "product_name": product_info.get("name"),
                     })
 
