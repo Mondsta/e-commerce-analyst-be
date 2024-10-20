@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 import re
 import pandas as pd
 from tabulate import tabulate
 
 app = Flask(__name__)
-
+CORS(app, origins='http://localhost:3000')
 # Fungsi yang digunakan untuk mengambil ulasan dari Shopee
 def get_shopee_reviews(url, limit=50):
     pattern = r'-i\.(\d+)\.(\d+)\?'
