@@ -3,10 +3,11 @@ from flask_cors import CORS
 import requests
 import re
 import pandas as pd
-from tabulate import tabulate
+from datetime import datetime  # Import library untuk konversi waktu
 
 app = Flask(__name__)
 CORS(app, origins='http://localhost:3000')
+
 # Fungsi yang digunakan untuk mengambil ulasan dari Shopee
 def get_shopee_reviews(url, limit=50):
     pattern = r'-i\.(\d+)\.(\d+)\?'
@@ -36,12 +37,18 @@ def get_shopee_reviews(url, limit=50):
             for review in reviews:
                 comment = review.get("comment")
                 rating = review.get("rating_star")  # Menambahkan rating ulasan
+                ctime = review.get("ctime")  # Mengambil waktu ulasan dalam Unix timestamp
+
+                # Konversi timestamp Unix ke format 'Day Month Year Time' (misalnya: 10 January 2023 15:30:45)
+                review_time = datetime.utcfromtimestamp(ctime).strftime('%d %B %Y %H:%M:%S') if ctime else None
+
                 if comment:  # Check if the comment is not empty
                     reviews_list.append({
                         "username": review.get("author_username"),
                         "review": comment,
                         "rating": rating,  # Menyimpan rating ulasan
                         "product_name": product_info.get("name"),
+                        "review_time": review_time  # Menambahkan waktu ulasan dengan format tanggal dan waktu
                     })
 
             offset += limit
@@ -49,8 +56,11 @@ def get_shopee_reviews(url, limit=50):
             return "Failed to retrieve reviews"
 
     if reviews_list:
-        df = pd.DataFrame(reviews_list)
+        # Mengurutkan ulasan berdasarkan review_time secara descending (ulasan terbaru di atas)
+        reviews_list = sorted(reviews_list, key=lambda x: x['review_time'], reverse=True)
+        
         # Mengubah DataFrame menjadi JSON untuk dikembalikan ke client
+        df = pd.DataFrame(reviews_list)
         return df.to_dict(orient="records")
     else:
         return "No reviews available"
