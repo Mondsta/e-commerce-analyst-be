@@ -3,12 +3,12 @@ from flask_cors import CORS
 import requests
 import re
 import pandas as pd
-from datetime import datetime  # Import library untuk konversi waktu
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app, origins='http://localhost:3000')
 
-# Fungsi yang digunakan untuk mengambil ulasan dari Shopee
+# Fungsi untuk mengambil ulasan dari Shopee menggunakan metode web scraping
 def get_shopee_reviews(url, limit=50):
     pattern = r'-i\.(\d+)\.(\d+)\?'
     match = re.search(pattern, url)
@@ -22,6 +22,7 @@ def get_shopee_reviews(url, limit=50):
 
     reviews_list = []
     offset = 0
+    product_name = ""
 
     while True:
         api_url = f"https://shopee.co.id/api/v2/item/get_ratings?itemid={item_id}&shopid={shop_id}&limit={limit}&offset={offset}"
@@ -31,24 +32,29 @@ def get_shopee_reviews(url, limit=50):
             reviews = data.get("data", {}).get("ratings", [])
             product_info = data.get("data", {}).get("item", {})
 
+            # Debugging: Memeriksa isi product_info
+            print("Product Info:", product_info)
+
+            # Mengambil nama produk dari product_info
+            product_name = product_info.get("name") or "No product name found"
+
             if not reviews:
-                break  # Break the loop if no more reviews are available
+                break  # Keluar dari loop jika tidak ada lagi ulasan
 
             for review in reviews:
                 comment = review.get("comment")
-                rating = review.get("rating_star")  # Menambahkan rating ulasan
-                ctime = review.get("ctime")  # Mengambil waktu ulasan dalam Unix timestamp
+                rating = review.get("rating_star")
+                ctime = review.get("ctime")  # Waktu ulasan dalam Unix timestamp
 
-                # Konversi timestamp Unix ke format 'Day Month Year Time' (misalnya: 10 January 2023 15:30:45)
-                review_time = datetime.utcfromtimestamp(ctime).strftime('%d %B %Y %H:%M:%S') if ctime else None
+                # Konversi timestamp Unix ke objek datetime
+                review_time = datetime.utcfromtimestamp(ctime) if ctime else None
 
-                if comment:  # Check if the comment is not empty
+                if comment:
                     reviews_list.append({
                         "username": review.get("author_username"),
                         "review": comment,
-                        "rating": rating,  # Menyimpan rating ulasan
-                        "product_name": product_info.get("name"),
-                        "review_time": review_time  # Menambahkan waktu ulasan dengan format tanggal dan waktu
+                        "rating": rating,
+                        "review_time": review_time
                     })
 
             offset += limit
@@ -59,9 +65,18 @@ def get_shopee_reviews(url, limit=50):
         # Mengurutkan ulasan berdasarkan review_time secara descending (ulasan terbaru di atas)
         reviews_list = sorted(reviews_list, key=lambda x: x['review_time'], reverse=True)
         
-        # Mengubah DataFrame menjadi JSON untuk dikembalikan ke client
-        df = pd.DataFrame(reviews_list)
-        return df.to_dict(orient="records")
+        # Konversi review_time ke format 'Day Month Year Time' setelah sorting
+        for review in reviews_list:
+            review["review_time"] = review["review_time"].strftime('%d %B %Y %H:%M:%S') if review["review_time"] else None
+        
+        # Menyusun hasil dalam bentuk dictionary yang diinginkan, dengan total_reviews
+        result = {
+            "product_name": product_name,
+            "total_reviews": len(reviews_list),  # Menambahkan total jumlah ulasan
+            "reviews": reviews_list
+        }
+        
+        return result
     else:
         return "No reviews available"
 
@@ -83,7 +98,7 @@ def get_reviews():
         return jsonify({"error": reviews}), 400  # Error handling jika terjadi kesalahan
 
     # Mengembalikan hasil review dalam format JSON
-    return jsonify({"reviews": reviews}), 200
+    return jsonify(reviews), 200
 
 # Menjalankan aplikasi Flask
 if __name__ == '__main__':
