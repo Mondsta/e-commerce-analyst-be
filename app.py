@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import re
-import pandas as pd
 from datetime import datetime
 
 app = Flask(__name__)
@@ -31,9 +30,6 @@ def get_shopee_reviews(url, limit=50):
             data = response.json()
             reviews = data.get("data", {}).get("ratings", [])
             product_info = data.get("data", {}).get("item", {})
-
-            # Debugging: Memeriksa isi product_info
-            print("Product Info:", product_info)
 
             # Mengambil nama produk dari product_info
             product_name = product_info.get("name") or "No product name found"
@@ -80,8 +76,45 @@ def get_shopee_reviews(url, limit=50):
     else:
         return "No reviews available"
 
+# Fungsi untuk mengambil ulasan dari Tokopedia menggunakan metode web scraping
+def get_tokopedia_reviews(url):
+    pattern = r'tokopedia\.com/([^/]+)/([^/]+)'
+    match = re.search(pattern, url)
+    if not match:
+        return "Invalid URL"
+    
+    store_name, product_id = match.groups()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
+
+    reviews_list = []
+    product_name = "Tokopedia Product"  # Anda dapat menambahkan logika untuk mendapatkan nama produk
+
+    # Simulasi: Mengambil ulasan (Anda perlu mengganti ini dengan logika yang sesuai untuk mengambil data ulasan dari Tokopedia)
+    # Misalnya, dengan mengirim permintaan ke API Tokopedia jika tersedia
+
+    # Contoh ulasan, silakan ganti dengan hasil scraping dari Tokopedia
+    reviews_list.append({
+        "username": "user_tokopedia1",
+        "review": "Ulasan dari Tokopedia",
+        "rating": 4,
+        "review_time": "27 Oktober 2024 14:30:00"
+    })
+
+    if reviews_list:
+        result = {
+            "product_name": product_name,
+            "total_reviews": len(reviews_list),
+            "reviews": reviews_list
+        }
+        return result
+    else:
+        return "No reviews available"
+
 # Endpoint untuk menerima POST request dengan URL Shopee
-@app.route('/get_reviews', methods=['POST'])
+@app.route('/get_shopee_reviews', methods=['POST'])
 def get_reviews():
     # Mendapatkan JSON dari request body
     data = request.json
@@ -93,6 +126,26 @@ def get_reviews():
 
     # Panggil fungsi get_shopee_reviews untuk mendapatkan ulasan
     reviews = get_shopee_reviews(url)
+
+    if isinstance(reviews, str):
+        return jsonify({"error": reviews}), 400  # Error handling jika terjadi kesalahan
+
+    # Mengembalikan hasil review dalam format JSON
+    return jsonify(reviews), 200
+
+# Endpoint untuk menerima POST request dengan URL Tokopedia
+@app.route('/get_tokopedia_reviews', methods=['POST'])
+def get_tokopedia_reviews_endpoint():
+    # Mendapatkan JSON dari request body
+    data = request.json
+    if not data or 'url' not in data:
+        return jsonify({"error": "URL not provided"}), 400
+
+    # Ambil URL dari request body
+    url = data['url']
+
+    # Panggil fungsi get_tokopedia_reviews untuk mendapatkan ulasan
+    reviews = get_tokopedia_reviews(url)
 
     if isinstance(reviews, str):
         return jsonify({"error": reviews}), 400  # Error handling jika terjadi kesalahan
