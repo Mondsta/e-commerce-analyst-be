@@ -5,20 +5,27 @@ import re
 import string
 import emoji
 from datetime import datetime
+from sklearn.ensemble import IsolationForest
+import numpy as np
 
 app = Flask(__name__)
 CORS(app, origins='http://localhost:3000')
 
 # Fungsi untuk membersihkan data ulasan
 def clean_review_data(review_text):
+    # Remove emojis
     review_text = emoji.replace_emoji(review_text, "")
+    # Replace colons with a space first
+    review_text = review_text.replace(":", " ")
+    # Remove all other punctuation
     review_text = review_text.translate(str.maketrans('', '', string.punctuation))
+    # Replace multiple spaces with a single space and strip leading/trailing spaces
     review_text = re.sub(r'\s+', ' ', review_text).strip()
     return review_text
 
-# Fungsi untuk mengambil ulasan dari Shopee
+# Fungsi untuk mengambil ulasan dari Shopee (tanpa pembersihan data)
 def get_shopee_reviews(url, limit=50):
-    pattern = r'-i\.(\d+)\.(\d+)\?'
+    pattern = r'i\.(\d+)\.(\d+)'
     match = re.search(pattern, url)
     if not match:
         return "Invalid URL"
@@ -51,10 +58,9 @@ def get_shopee_reviews(url, limit=50):
                 review_time = datetime.utcfromtimestamp(ctime) if ctime else None
 
                 if comment:
-                    cleaned_comment = clean_review_data(comment)
                     reviews_list.append({
                         "username": review.get("author_username"),
-                        "review": cleaned_comment,
+                        "review": comment,  # Tanpa pembersihan
                         "rating": rating,
                         "review_time": review_time
                     })
@@ -78,7 +84,7 @@ def get_shopee_reviews(url, limit=50):
     else:
         return "No reviews available"
 
-# Fungsi untuk mengambil ulasan dari Tokopedia
+# Fungsi untuk mengambil ulasan dari Tokopedia (tanpa pembersihan data)
 def get_tokopedia_reviews(url):
     pattern = r'tokopedia\.com/([^/]+)/([^/]+)'
     match = re.search(pattern, url)
@@ -90,11 +96,10 @@ def get_tokopedia_reviews(url):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
     }
 
-    # Catatan: Anda perlu mengonfigurasi proses scraping untuk Tokopedia.
     reviews_list = [
         {
             "username": "user_tokopedia1",
-            "review": clean_review_data("Ulasan produk dari Tokopedia! Sangat bagus!"),
+            "review": "Ulasan produk dari Tokopedia! Sangat bagus!",  # Tanpa pembersihan
             "rating": 4,
             "review_time": "27 Oktober 2024 14:30:00"
         }
@@ -102,7 +107,7 @@ def get_tokopedia_reviews(url):
     
     if reviews_list:
         result = {
-            "product_name": "Tokopedia Product",  # Nama produk bisa diubah jika datanya ada
+            "product_name": "Tokopedia Product",
             "total_reviews": len(reviews_list),
             "reviews": reviews_list
         }
@@ -149,7 +154,6 @@ def clean_review_data_endpoint():
 
     cleaned_reviews = []
     for review in data['reviews']:
-        # Clean only the review text
         cleaned_review_text = clean_review_data(review['review'])
         cleaned_reviews.append({
             "username": review['username'],
@@ -163,6 +167,73 @@ def clean_review_data_endpoint():
         "total_reviews": len(cleaned_reviews),
         "reviews": cleaned_reviews
     }
+    
+    return jsonify(result), 200
+
+# Endpoint untuk analisa anomali pada ulasan
+@app.route('/analyze_anomalies', methods=['POST'])
+def analyze_anomalies():
+    data = request.json
+    if not data or 'reviews' not in data:
+        return jsonify({"error": "Reviews not provided"}), 400
+
+    reviews = data['reviews']
+    review_texts = [review['review'] for review in reviews]
+
+    # Feature extraction
+    feature_array = np.array([[len(review['review']), review['rating']] for review in reviews])
+
+    # Fit Isolation Forest model
+    isolation_forest = IsolationForest(contamination=0.1)
+    isolation_forest.fit(feature_array)
+
+    # Predict anomalies
+    anomaly_predictions = isolation_forest.predict(feature_array)
+
+    # Get decision function scores
+    decision_scores = isolation_forest.decision_function(feature_array)
+
+    # Normalize scores to range [0, 1]
+    normalized_scores = (decision_scores - decision_scores.min()) / (decision_scores.max() - decision_scores.min())
+
+    # Prepare result with scores
+    anomalies = []
+    for i, prediction in enumerate(anomaly_predictions):
+        if prediction == -1:  # If it's an anomaly
+            conclusion = ""
+            if reviews[i]['rating'] >= 4:
+                conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi kurang memberikan alasan yang kuat."
+            elif reviews[i]['rating'] <= 2:
+                conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas review yang positif."
+
+            anomalies.append({
+                "username": reviews[i]['username'],
+                "review": reviews[i]['review'],
+                "rating": reviews[i]['rating'],
+                "review_time": reviews[i]['review_time'],
+                "anomaly": True,
+                "conclusion": conclusion,
+                "anomaly_score": normalized_scores[i]  # Tambahkan skor anomali ke output
+            })
+
+    # Membuat hasil dengan setiap anomali terpisah
+    result = {
+        "product_name": data.get("product_name", "Unknown"),
+        "total_reviews": len(reviews),  # Total ulasan semua
+        "total_anomalies": len(anomalies),  # Total ulasan anomali
+        "anomalies": anomalies
+    }
+    
+    # Mengubah struktur untuk menampilkan setiap anomali dalam format yang diinginkan
+    if anomalies:
+        result['anomalies'] = [{"anomaly": True,
+                                 "conclusion": anomaly['conclusion'],
+                                 "rating": anomaly['rating'],
+                                 "review": anomaly['review'],
+                                 "review_time": anomaly['review_time'],
+                                 "username": anomaly['username'],
+                                 "anomaly_score": anomaly['anomaly_score']}  # Menyertakan skor anomali
+                               for anomaly in anomalies]
     
     return jsonify(result), 200
 
