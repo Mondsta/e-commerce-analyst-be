@@ -114,6 +114,9 @@ def get_tokopedia_reviews(url):
         return result
     else:
         return "No reviews available"
+    
+####################################################################################################
+# Endpoint
 
 # Endpoint untuk mendapatkan ulasan Shopee
 @app.route('/get_shopee_reviews', methods=['POST'])
