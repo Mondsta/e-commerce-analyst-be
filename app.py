@@ -37,16 +37,23 @@ def get_shopee_reviews(url, limit=50):
 
     reviews_list = []
     offset = 0
-    product_name = ""
+    product_name = None  # Awalnya None
+    product_image = None  # Tambahkan variabel product_image
 
     while True:
         api_url = f"https://shopee.co.id/api/v2/item/get_ratings?itemid={item_id}&shopid={shop_id}&limit={limit}&offset={offset}"
         response = requests.get(api_url, headers=headers)
+        # print("API URL:", api_url)
         if response.status_code == 200:
             data = response.json()
+            # print(data)
             reviews = data.get("data", {}).get("ratings", [])
-            product_info = data.get("data", {}).get("item", {})
-            product_name = product_info.get("name") or "No product name found"
+            
+            # Ambil nama dan gambar produk dari review pertama, jika belum ada
+            if reviews and product_name is None and product_image is None:
+                original_item_info = reviews[0].get("original_item_info", {})
+                product_name = original_item_info.get("name", "Unknown Product")
+                product_image = original_item_info.get("image", "")
 
             if not reviews:
                 break
@@ -76,6 +83,7 @@ def get_shopee_reviews(url, limit=50):
 
         result = {
             "product_name": product_name,
+            "product_image": product_image,  # Tambahkan output product_image
             "total_reviews": len(reviews_list),
             "reviews": reviews_list
         }
@@ -90,30 +98,39 @@ def get_tokopedia_reviews(url):
     match = re.search(pattern, url)
     if not match:
         return "Invalid URL"
-    
+
     store_name, product_id = match.groups()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
     }
 
-    reviews_list = [
-        {
-            "username": "user_tokopedia1",
-            "review": "Ulasan produk dari Tokopedia! Sangat bagus!",  # Tanpa pembersihan
-            "rating": 4,
-            "review_time": "27 Oktober 2024 14:30:00"
-        }
-    ]
+    # Panggilan API untuk mendapatkan ulasan
+    api_url = f"https://api.tokopedia.com/v1/product/{product_id}/reviews"  # Contoh URL
+    response = requests.get(api_url, headers=headers)
     
-    if reviews_list:
+    if response.status_code == 200:
+        data = response.json()
+        reviews_list = []  # Ambil ulasan dari data
+        
+        # Misalkan 'reviews' adalah key yang berisi data ulasan
+        for review in data.get("reviews", []):
+            reviews_list.append({
+                "username": review.get("author_username", "Unknown User"),
+                "review": review.get("review_text", ""),  # Misalkan ini adalah teks ulasan
+                "rating": review.get("rating_star", 0),  # Misalkan ini adalah rating
+                "review_time": datetime.utcfromtimestamp(review.get("created_at", 0)).strftime('%d %B %Y %H:%M:%S')  # Misalkan ini adalah waktu review
+            })
+
         result = {
-            "product_name": "Tokopedia Product",
+            "product_name": "Tokopedia Product",  # Atau ambil dari data jika ada
+            "product_image": "",  # Tambahkan gambar produk jika tersedia
             "total_reviews": len(reviews_list),
             "reviews": reviews_list
         }
+        
         return result
     else:
-        return "No reviews available"
+        return "Failed to retrieve reviews"
     
 ####################################################################################################
 # Endpoint
@@ -167,6 +184,7 @@ def clean_review_data_endpoint():
 
     result = {
         "product_name": data.get("product_name", "Unknown"),
+        "product_image": data.get("product_image", "Unknown"),
         "total_reviews": len(cleaned_reviews),
         "reviews": cleaned_reviews
     }
@@ -183,30 +201,37 @@ def analyze_anomalies():
     reviews = data['reviews']
     review_texts = [review['review'] for review in reviews]
 
-    # Feature extraction
-    feature_array = np.array([[len(review['review']), review['rating']] for review in reviews])
+    # Ekstraksi fitur
+    feature_array = np.array([[len(review['review'].split()), review['rating']] for review in reviews])
 
-    # Fit Isolation Forest model
-    isolation_forest = IsolationForest(contamination=0.1)
+    # Inisialisasi Isolation Forest dengan parameter yang dituning
+    isolation_forest = IsolationForest(
+        n_estimators=10000,          # Jumlah estimators
+        max_samples='auto',        # Sampel maksimum per pohon
+        contamination=0.1,         # Persentase anomali yang diharapkan
+        random_state=42,           # Seed untuk reproduksibilitas
+        bootstrap=False,            # Tidak menggunakan bootstrap
+        n_jobs=-1                  # Gunakan semua core yang tersedia
+    )
+    
+    # Fit model
     isolation_forest.fit(feature_array)
 
-    # Predict anomalies
+    # Prediksi anomali dan hitung skor anomali
     anomaly_predictions = isolation_forest.predict(feature_array)
-
-    # Get decision function scores
     decision_scores = isolation_forest.decision_function(feature_array)
 
-    # Normalize scores to range [0, 1]
+    # Normalisasi skor ke rentang [0, 1]
     normalized_scores = (decision_scores - decision_scores.min()) / (decision_scores.max() - decision_scores.min())
 
-    # Prepare result with scores
+    # Siapkan hasil dengan skor dan kesimpulan
     anomalies = []
     for i, prediction in enumerate(anomaly_predictions):
-        if prediction == -1:  # If it's an anomaly
+        if prediction == -1:  # Jika ini adalah anomali
             conclusion = ""
             if reviews[i]['rating'] >= 4:
                 conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi kurang memberikan alasan yang kuat."
-            elif reviews[i]['rating'] <= 2:
+            elif reviews[i]['rating'] <= 4:
                 conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas review yang positif."
 
             anomalies.append({
@@ -216,14 +241,15 @@ def analyze_anomalies():
                 "review_time": reviews[i]['review_time'],
                 "anomaly": True,
                 "conclusion": conclusion,
-                "anomaly_score": normalized_scores[i]  # Tambahkan skor anomali ke output
+                "anomaly_score": normalized_scores[i]  # Skor anomali
             })
 
     # Membuat hasil dengan setiap anomali terpisah
     result = {
         "product_name": data.get("product_name", "Unknown"),
-        "total_reviews": len(reviews),  # Total ulasan semua
-        "total_anomalies": len(anomalies),  # Total ulasan anomali
+        "product_image": data.get("product_image", "Unknown"),
+        "total_reviews": len(reviews),
+        "total_anomalies": len(anomalies),
         "anomalies": anomalies
     }
     
@@ -235,7 +261,7 @@ def analyze_anomalies():
                                  "review": anomaly['review'],
                                  "review_time": anomaly['review_time'],
                                  "username": anomaly['username'],
-                                 "anomaly_score": anomaly['anomaly_score']}  # Menyertakan skor anomali
+                                 "anomaly_score": anomaly['anomaly_score']} 
                                for anomaly in anomalies]
     
     return jsonify(result), 200
