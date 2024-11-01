@@ -7,20 +7,41 @@ import emoji
 from datetime import datetime
 from sklearn.ensemble import IsolationForest
 import numpy as np
+import pandas as pd
+from textblob import TextBlob
 
 app = Flask(__name__)
 CORS(app, origins='http://localhost:3000')
 
+# Load slank word dictionary from CSV
+slang_dict = pd.read_csv('datatraining/data_training_normalisasi_kata.csv', on_bad_lines='skip').set_index('slang').to_dict()['normalized']
+
+# Fungsi untuk normalisasi slang menggunakan kamus
+def normalize_slang(text):
+    words = text.split()
+    normalized_text = ' '.join([slang_dict.get(word.lower(), word) for word in words])
+    return normalized_text
+
+# Fungsi untuk menghapus link, mention, hashtag, tab, new line, back slash, dll.
+def remove_links(text):
+    text = text.replace('\\t', " ").replace('\\n', " ").replace('\\u', " ").replace('\\', "")
+    text = text.encode('ascii', 'replace').decode('ascii')
+    text = ' '.join(re.sub(r"([@#][A-Za-z0-9]+)|(\w+://\S+)", " ", text).split())
+    return text.replace("http://", " ").replace("https://", " ")
+
+# Fungsi untuk menghapus angka
+def remove_number(text):
+    return re.sub(r"\d+", " ", text)
+
 # Fungsi untuk membersihkan data ulasan
 def clean_review_data(review_text):
-    # Remove emojis
+    review_text = remove_links(review_text)
+    review_text = remove_number(review_text)
     review_text = emoji.replace_emoji(review_text, "")
-    # Replace colons with a space first
     review_text = review_text.replace(":", " ")
-    # Remove all other punctuation
     review_text = review_text.translate(str.maketrans('', '', string.punctuation))
-    # Replace multiple spaces with a single space and strip leading/trailing spaces
     review_text = re.sub(r'\s+', ' ', review_text).strip()
+    review_text = normalize_slang(review_text)  # Normalisasi slang
     return review_text
 
 # Fungsi untuk mengambil ulasan dari Shopee (tanpa pembersihan data)
@@ -91,46 +112,6 @@ def get_shopee_reviews(url, limit=50):
         return result
     else:
         return "No reviews available"
-
-# Fungsi untuk mengambil ulasan dari Tokopedia (tanpa pembersihan data)
-def get_tokopedia_reviews(url):
-    pattern = r'tokopedia\.com/([^/]+)/([^/]+)'
-    match = re.search(pattern, url)
-    if not match:
-        return "Invalid URL"
-
-    store_name, product_id = match.groups()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-    }
-
-    # Panggilan API untuk mendapatkan ulasan
-    api_url = f"https://api.tokopedia.com/v1/product/{product_id}/reviews"  # Contoh URL
-    response = requests.get(api_url, headers=headers)
-    
-    if response.status_code == 200:
-        data = response.json()
-        reviews_list = []  # Ambil ulasan dari data
-        
-        # Misalkan 'reviews' adalah key yang berisi data ulasan
-        for review in data.get("reviews", []):
-            reviews_list.append({
-                "username": review.get("author_username", "Unknown User"),
-                "review": review.get("review_text", ""),  # Misalkan ini adalah teks ulasan
-                "rating": review.get("rating_star", 0),  # Misalkan ini adalah rating
-                "review_time": datetime.utcfromtimestamp(review.get("created_at", 0)).strftime('%d %B %Y %H:%M:%S')  # Misalkan ini adalah waktu review
-            })
-
-        result = {
-            "product_name": "Tokopedia Product",  # Atau ambil dari data jika ada
-            "product_image": "",  # Tambahkan gambar produk jika tersedia
-            "total_reviews": len(reviews_list),
-            "reviews": reviews_list
-        }
-        
-        return result
-    else:
-        return "Failed to retrieve reviews"
     
 ####################################################################################################
 # Endpoint
@@ -144,21 +125,6 @@ def get_reviews():
 
     url = data['url']
     reviews = get_shopee_reviews(url)
-
-    if isinstance(reviews, str):
-        return jsonify({"error": reviews}), 400
-
-    return jsonify(reviews), 200
-
-# Endpoint untuk mendapatkan ulasan Tokopedia
-@app.route('/get_tokopedia_reviews', methods=['POST'])
-def get_tokopedia_reviews_endpoint():
-    data = request.json
-    if not data or 'url' not in data:
-        return jsonify({"error": "URL not provided"}), 400
-
-    url = data['url']
-    reviews = get_tokopedia_reviews(url)
 
     if isinstance(reviews, str):
         return jsonify({"error": reviews}), 400
@@ -199,25 +165,24 @@ def analyze_anomalies():
         return jsonify({"error": "Reviews not provided"}), 400
 
     reviews = data['reviews']
-    review_texts = [review['review'] for review in reviews]
-
-    # Ekstraksi fitur
+    
+    # Ekstraksi fitur: panjang ulasan dan rating
     feature_array = np.array([[len(review['review'].split()), review['rating']] for review in reviews])
 
-    # Inisialisasi Isolation Forest dengan parameter yang dituning
+    # Inisialisasi Isolation Forest
     isolation_forest = IsolationForest(
-        n_estimators=10000,          # Jumlah estimators
-        max_samples='auto',        # Sampel maksimum per pohon
-        contamination=0.1,         # Persentase anomali yang diharapkan
-        random_state=42,           # Seed untuk reproduksibilitas
-        bootstrap=False,            # Tidak menggunakan bootstrap
-        n_jobs=-1                  # Gunakan semua core yang tersedia
+        n_estimators=10000,
+        max_samples='auto',
+        contamination=0.1,
+        random_state=42,
+        bootstrap=False,
+        n_jobs=-1
     )
     
     # Fit model
     isolation_forest.fit(feature_array)
 
-    # Prediksi anomali dan hitung skor anomali
+    # Prediksi anomali
     anomaly_predictions = isolation_forest.predict(feature_array)
     decision_scores = isolation_forest.decision_function(feature_array)
 
@@ -228,11 +193,24 @@ def analyze_anomalies():
     anomalies = []
     for i, prediction in enumerate(anomaly_predictions):
         if prediction == -1:  # Jika ini adalah anomali
+            # Analisis sentimen dengan TextBlob
+            blob = TextBlob(reviews[i]['review'])
+            sentiment = blob.sentiment
+            
+            # Inisialisasi kesimpulan
             conclusion = ""
-            if reviews[i]['rating'] >= 4:
-                conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi kurang memberikan alasan yang kuat."
-            elif reviews[i]['rating'] <= 4:
-                conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas review yang positif."
+
+            # Tentukan kesimpulan berdasarkan rating dan sentimen
+            if reviews[i]['rating'] >= 4:  # Anomali positif
+                if sentiment.polarity < 0.2:
+                    conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi kurang memberikan alasan yang kuat."
+                else:
+                    conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak sesuai dengan mayoritas komentar lainnya."
+            elif reviews[i]['rating'] < 4:  # Anomali negatif
+                if sentiment.polarity > -0.2:
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas review yang positif."
+                else:
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah dan berisi kritik yang tajam."
 
             anomalies.append({
                 "username": reviews[i]['username'],
@@ -241,7 +219,9 @@ def analyze_anomalies():
                 "review_time": reviews[i]['review_time'],
                 "anomaly": True,
                 "conclusion": conclusion,
-                "anomaly_score": normalized_scores[i]  # Skor anomali
+                "anomaly_score": normalized_scores[i],  # Skor anomali
+                "sentiment_polarity": sentiment.polarity,  # Nilai polaritas sentimen
+                "sentiment_subjectivity": sentiment.subjectivity  # Nilai subjektivitas
             })
 
     # Membuat hasil dengan setiap anomali terpisah
@@ -261,7 +241,9 @@ def analyze_anomalies():
                                  "review": anomaly['review'],
                                  "review_time": anomaly['review_time'],
                                  "username": anomaly['username'],
-                                 "anomaly_score": anomaly['anomaly_score']} 
+                                 "anomaly_score": anomaly['anomaly_score'],
+                                 "sentiment_polarity": anomaly['sentiment_polarity'],
+                                 "sentiment_subjectivity": anomaly['sentiment_subjectivity']} 
                                for anomaly in anomalies]
     
     return jsonify(result), 200
