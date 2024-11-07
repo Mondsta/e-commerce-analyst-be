@@ -8,7 +8,12 @@ from datetime import datetime
 from sklearn.ensemble import IsolationForest
 import numpy as np
 import pandas as pd
-from textblob import TextBlob
+import time
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+import os
+import json
+from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
 
 app = Flask(__name__)
 CORS(app, origins='http://localhost:3000')
@@ -44,8 +49,26 @@ def clean_review_data(review_text):
     review_text = normalize_slang(review_text)  # Normalisasi slang
     return review_text
 
-# Fungsi untuk mengambil ulasan dari Shopee (tanpa pembersihan data)
+# Function to cache reviews
+def cache_reviews(cache_file, reviews):
+    with open(cache_file, 'w') as f:
+        json.dump(reviews, f)
+
+# Function to load cached reviews
+def load_cached_reviews(cache_file):
+    if os.path.exists(cache_file):
+        with open(cache_file, 'r') as f:
+            return json.load(f)
+    return None
+
+# Function to create cache directory
+def create_cache_directory():
+    if not os.path.exists('cache'):
+        os.makedirs('cache')
+
+# Function to get reviews from Shopee
 def get_shopee_reviews(url, limit=50):
+    create_cache_directory()  # Ensure cache directory exists
     pattern = r'i\.(\d+)\.(\d+)'
     match = re.search(pattern, url)
     if not match:
@@ -56,46 +79,65 @@ def get_shopee_reviews(url, limit=50):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
     }
 
+    session = requests.Session()
+    retries = Retry(total=5, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+
     reviews_list = []
     offset = 0
-    product_name = None  # Awalnya None
-    product_image = None  # Tambahkan variabel product_image
+    product_name = None
+    product_image = None
+
+    # Define cache file name based on the URL
+    cache_file = f"cache/{shop_id}_{item_id}_reviews.json"
+    
+    # Check if cached reviews exist
+    cached_reviews = load_cached_reviews(cache_file)
+    if cached_reviews:
+        return cached_reviews  # Return cached reviews if available
 
     while True:
         api_url = f"https://shopee.co.id/api/v2/item/get_ratings?itemid={item_id}&shopid={shop_id}&limit={limit}&offset={offset}"
-        response = requests.get(api_url, headers=headers)
-        # print("API URL:", api_url)
-        if response.status_code == 200:
-            data = response.json()
-            # print(data)
-            reviews = data.get("data", {}).get("ratings", [])
+        try:
+            response = session.get(api_url, headers=headers, timeout=10)
+            print(f"Request URL: {api_url} - Status Code: {response.status_code}")  # Log URL and status code
             
-            # Ambil nama dan gambar produk dari review pertama, jika belum ada
-            if reviews and product_name is None and product_image is None:
-                original_item_info = reviews[0].get("original_item_info", {})
-                product_name = original_item_info.get("name", "Unknown Product")
-                product_image = original_item_info.get("image", "")
+            if response.status_code == 200:
+                data = response.json()
+                reviews = data.get("data", {}).get("ratings", [])
+                
+                if reviews and product_name is None and product_image is None:
+                    original_item_info = reviews[0].get("original_item_info", {})
+                    product_name = original_item_info.get("name", "Unknown Product")
+                    product_image = original_item_info.get("image", "")
+                
+                if not reviews:
+                    print(f"No more reviews found at offset: {offset}. Exiting loop.")  # Log when no reviews found
+                    break
+                
+                for review in reviews:
+                    comment = review.get("comment")
+                    rating = review.get("rating_star")
+                    ctime = review.get("ctime")
+                    review_time = datetime.utcfromtimestamp(ctime) if ctime else None
 
-            if not reviews:
+                    if comment:
+                        reviews_list.append({
+                            "username": review.get("author_username"),
+                            "review": comment,
+                            "rating": rating,
+                            "review_time": review_time
+                        })
+
+                offset += limit
+                print(f"Fetched {len(reviews)} reviews. Moving to offset {offset}.")  # Log the number of reviews fetched
+                time.sleep(0.5)  # Delay to avoid hitting rate limits
+            else:
+                print(f"Failed to fetch reviews: Status code {response.status_code}")
                 break
-
-            for review in reviews:
-                comment = review.get("comment")
-                rating = review.get("rating_star")
-                ctime = review.get("ctime")
-                review_time = datetime.utcfromtimestamp(ctime) if ctime else None
-
-                if comment:
-                    reviews_list.append({
-                        "username": review.get("author_username"),
-                        "review": comment,  # Tanpa pembersihan
-                        "rating": rating,
-                        "review_time": review_time
-                    })
-
-            offset += limit
-        else:
-            return "Failed to retrieve reviews"
+        except requests.exceptions.RequestException as e:
+            print("Error during API request:", e)
+            break
 
     if reviews_list:
         reviews_list = sorted(reviews_list, key=lambda x: x['review_time'], reverse=True)
@@ -104,15 +146,18 @@ def get_shopee_reviews(url, limit=50):
 
         result = {
             "product_name": product_name,
-            "product_image": product_image,  # Tambahkan output product_image
+            "product_image": product_image,
             "total_reviews": len(reviews_list),
             "reviews": reviews_list
         }
         
+        # Cache the results
+        cache_reviews(cache_file, result)
+        
         return result
     else:
         return "No reviews available"
-    
+
 ####################################################################################################
 # Endpoint
 
@@ -166,12 +211,16 @@ def analyze_anomalies():
 
     reviews = data['reviews']
     
-    # Ekstraksi fitur: panjang ulasan dan rating
+    # Ground truth labels (for example purposes, this should be real ground truth data)
+    # 1: anomaly, 0: normal
+    ground_truth = [1 if review['rating'] <= 3 else 0 for review in reviews]  # Dummy ground truth
+    
+    # Extract features: review length and rating
     feature_array = np.array([[len(review['review'].split()), review['rating']] for review in reviews])
 
-    # Inisialisasi Isolation Forest
+    # Initialize Isolation Forest
     isolation_forest = IsolationForest(
-        n_estimators=10000,
+        n_estimators=1000,
         max_samples='auto',
         contamination=0.1,
         random_state=42,
@@ -182,70 +231,80 @@ def analyze_anomalies():
     # Fit model
     isolation_forest.fit(feature_array)
 
-    # Prediksi anomali
+    # Predict anomalies
     anomaly_predictions = isolation_forest.predict(feature_array)
     decision_scores = isolation_forest.decision_function(feature_array)
 
-    # Normalisasi skor ke rentang [0, 1]
+    # Normalize scores to [0, 1]
     normalized_scores = (decision_scores - decision_scores.min()) / (decision_scores.max() - decision_scores.min())
 
-    # Siapkan hasil dengan skor dan kesimpulan
+    # Anomaly detection result
     anomalies = []
     for i, prediction in enumerate(anomaly_predictions):
-        if prediction == -1:  # Jika ini adalah anomali
-            # Analisis sentimen dengan TextBlob
-            blob = TextBlob(reviews[i]['review'])
-            sentiment = blob.sentiment
-            
-            # Inisialisasi kesimpulan
+        if prediction == -1:  # If this is an anomaly
+            # Pastikan data review ada
+            review = reviews[i]
+            rating = review.get('rating')
+            review_text = review.get('review')
+            review_time = review.get('review_time')
+
+            # Jika rating atau review_text tidak ada, skip ke iterasi berikutnya
+            if rating is None or review_text is None:
+                continue
+
+            review_length = len(review_text.split())
+            anomaly_score = normalized_scores[i]
+
+            # Anomaly conclusion based on review content
             conclusion = ""
 
-            # Tentukan kesimpulan berdasarkan rating dan sentimen
-            if reviews[i]['rating'] >= 4:  # Anomali positif
-                if sentiment.polarity < 0.2:
+            if rating >= 4:  # Positive anomaly
+                # Check if review lacks a strong reason
+                if review_length < 10:  # Example threshold for a brief review
                     conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi kurang memberikan alasan yang kuat."
-                else:
+                # Check if review is inconsistent with majority of comments
+                elif review_text.lower() not in ' '.join([r['review'].lower() for r in reviews if r['rating'] >= 4]):
                     conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak sesuai dengan mayoritas komentar lainnya."
-            elif reviews[i]['rating'] < 4:  # Anomali negatif
-                if sentiment.polarity > -0.2:
-                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas review yang positif."
                 else:
-                    conclusion = "Anomali negatif: Review ini memiliki rating rendah dan berisi kritik yang tajam."
+                    conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak memberikan alasan yang cukup kuat."
+
+            elif rating <= 3:  # Negative anomaly
+                # Check if review lacks explanation
+                if review_length < 10:  # Example threshold for a brief review
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak memberikan alasan yang kuat."
+                # Check if review is inconsistent with majority of comments
+                elif review_text.lower() not in ' '.join([r['review'].lower() for r in reviews if r['rating'] <= 3]):
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas komentar lainnya."
+                else:
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak memberikan alasan yang cukup kuat."
 
             anomalies.append({
-                "username": reviews[i]['username'],
-                "review": reviews[i]['review'],
-                "rating": reviews[i]['rating'],
-                "review_time": reviews[i]['review_time'],
+                "username": review.get('username'),
+                "review": review_text,
+                "rating": rating,
+                "review_time": review_time,
                 "anomaly": True,
                 "conclusion": conclusion,
-                "anomaly_score": normalized_scores[i],  # Skor anomali
-                "sentiment_polarity": sentiment.polarity,  # Nilai polaritas sentimen
-                "sentiment_subjectivity": sentiment.subjectivity  # Nilai subjektivitas
+                "anomaly_score": anomaly_score
             })
 
-    # Membuat hasil dengan setiap anomali terpisah
+    # Calculate confusion matrix and accuracy
+    pred_labels = [1 if pred == -1 else 0 for pred in anomaly_predictions]  # Convert -1 to 1 (anomaly) and 1 to 0 (normal)
+
+    cm = confusion_matrix(ground_truth, pred_labels)
+    accuracy = accuracy_score(ground_truth, pred_labels)
+
     result = {
         "product_name": data.get("product_name", "Unknown"),
         "product_image": data.get("product_image", "Unknown"),
         "total_reviews": len(reviews),
         "total_anomalies": len(anomalies),
-        "anomalies": anomalies
+        "anomalies": anomalies,
+        "accuracy": accuracy,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": classification_report(ground_truth, pred_labels)
     }
-    
-    # Mengubah struktur untuk menampilkan setiap anomali dalam format yang diinginkan
-    if anomalies:
-        result['anomalies'] = [{"anomaly": True,
-                                 "conclusion": anomaly['conclusion'],
-                                 "rating": anomaly['rating'],
-                                 "review": anomaly['review'],
-                                 "review_time": anomaly['review_time'],
-                                 "username": anomaly['username'],
-                                 "anomaly_score": anomaly['anomaly_score'],
-                                 "sentiment_polarity": anomaly['sentiment_polarity'],
-                                 "sentiment_subjectivity": anomaly['sentiment_subjectivity']} 
-                               for anomaly in anomalies]
-    
+
     return jsonify(result), 200
 
 if __name__ == '__main__':
