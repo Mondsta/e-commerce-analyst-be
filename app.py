@@ -222,7 +222,7 @@ def analyze_anomalies():
     isolation_forest = IsolationForest(
         n_estimators=1000,
         max_samples='auto',
-        contamination=0.1,
+        contamination=0.2,
         random_state=42,
         bootstrap=False,
         n_jobs=-1
@@ -266,7 +266,7 @@ def analyze_anomalies():
                 elif review_text.lower() not in ' '.join([r['review'].lower() for r in reviews if r['rating'] >= 4]):
                     conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak sesuai dengan mayoritas komentar lainnya."
                 else:
-                    conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak memberikan alasan yang cukup kuat."
+                    conclusion = "Anomali positif: Review ini memiliki rating tinggi tetapi tidak sesuai dengan mayoritas komentar lainnya"
 
             elif rating <= 3:  # Negative anomaly
                 # Check if review lacks explanation
@@ -276,7 +276,7 @@ def analyze_anomalies():
                 elif review_text.lower() not in ' '.join([r['review'].lower() for r in reviews if r['rating'] <= 3]):
                     conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas komentar lainnya."
                 else:
-                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak memberikan alasan yang cukup kuat."
+                    conclusion = "Anomali negatif: Review ini memiliki rating rendah tetapi tidak sesuai dengan mayoritas komentar lainnya."
 
             anomalies.append({
                 "username": review.get('username'),
