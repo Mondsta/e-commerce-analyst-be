@@ -1,5 +1,3 @@
-Berikut adalah template lengkap untuk **README.md** Anda, sesuai dengan format yang Anda inginkan:
-
 ```markdown
 # Project Setup
 
