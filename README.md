@@ -50,7 +50,7 @@ Setelah mengaktifkan virtual environment, install dependensi yang diperlukan unt
 
   Pastikan file `requirements.txt` ada di direktori utama proyek Anda dan berisi daftar paket yang diperlukan.
 
-### 3. Menyiapkan File Konfigurasi
+### 3. Menyiapkan File Konfigurasi ( Hanya di File Front End )
 
 Buat file **`.env.local`** di direktori utama project dan tambahkan konfigurasi berikut:
 
